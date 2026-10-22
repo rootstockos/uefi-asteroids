@@ -376,6 +376,71 @@ STATIC EFI_BLOCK_IO_PROTOCOL  mBlockIo = {
   RamBlockFlush
 };
 
+/**
+  Find a FAT volume inside the initrd.
+
+  With a boot image header v3/v4 the bootloader builds the initrd as the vendor_boot ramdisk, then the boot image's
+  own ramdisk (the payload FAT volume), then bootconfig, so the volume rarely starts the range and is not sector
+  aligned. Look for the first offset holding a valid FAT boot sector (jump, 512-byte sectors, a power-of-two
+  cluster size, one or two FATs, a "FAT" type string and the 0x55AA signature) whose volume fits in the rest of
+  the range. Reads only memory inside [Start, End).
+
+  @retval TRUE  *VolumeStart and *VolumeBytes describe the volume.
+**/
+STATIC
+BOOLEAN
+FindFatVolume (
+  IN  UINT64  Start,
+  IN  UINT64  End,
+  OUT UINT64  *VolumeStart,
+  OUT UINT64  *VolumeBytes
+  )
+{
+  CONST UINT8  *Base;
+  UINT64       Length;
+  UINT64       Offset;
+  UINT64       Sectors;
+  UINT8        PerCluster;
+
+  Base   = (CONST UINT8 *)(UINTN)Start;
+  Length = End - Start;
+  for (Offset = 0; Offset + RAM_BLOCK_SIZE <= Length; Offset++) {
+    CONST UINT8  *Sector = Base + Offset;
+
+    if (!(((Sector[0] == 0xEB) && (Sector[2] == 0x90)) || (Sector[0] == 0xE9))) {
+      continue;
+    }
+
+    if ((Sector[510] != 0x55) || (Sector[511] != 0xAA) || (ReadUnaligned16 ((CONST UINT16 *)(Sector + 11)) != RAM_BLOCK_SIZE)) {
+      continue;
+    }
+
+    PerCluster = Sector[13];
+    if ((PerCluster == 0) || ((PerCluster & (PerCluster - 1)) != 0) || (Sector[16] == 0) || (Sector[16] > 2)) {
+      continue;
+    }
+
+    if ((CompareMem (Sector + 54, "FAT", 3) != 0) && (CompareMem (Sector + 82, "FAT", 3) != 0)) {
+      continue;
+    }
+
+    Sectors = ReadUnaligned16 ((CONST UINT16 *)(Sector + 19));
+    if (Sectors == 0) {
+      Sectors = ReadUnaligned32 ((CONST UINT32 *)(Sector + 32));
+    }
+
+    if ((Sectors == 0) || (Sectors * RAM_BLOCK_SIZE > Length - Offset)) {
+      continue;
+    }
+
+    *VolumeStart = Start + Offset;
+    *VolumeBytes = Sectors * RAM_BLOCK_SIZE;
+    return TRUE;
+  }
+
+  return FALSE;
+}
+
 STATIC
 VOID
 PublishInitrd (
@@ -409,6 +474,17 @@ PublishInitrd (
 
   Start = ReadCells (StartProp, StartLength / 4);
   End   = ReadCells (EndProp, EndLength / 4);
+  if (End > Start) {
+    UINT64  VolumeStart;
+    UINT64  VolumeBytes;
+
+    if (FindFatVolume (Start, End, &VolumeStart, &VolumeBytes)) {
+      DEBUG ((DEBUG_ERROR, "SHENGMEM: initrd 0x%lx-0x%lx, FAT volume at +0x%lx\n", Start, End, VolumeStart - Start));
+      Start = VolumeStart;
+      End   = VolumeStart + VolumeBytes;
+    }
+  }
+
   if ((End <= Start) || (((End - Start) % RAM_BLOCK_SIZE) != 0)) {
     DEBUG ((DEBUG_ERROR, "SHENGMEM: initrd 0x%lx-0x%lx is not a whole number of sectors\n", Start, End));
     return;
