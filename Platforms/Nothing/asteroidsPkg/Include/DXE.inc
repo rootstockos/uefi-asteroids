@@ -34,6 +34,8 @@
   # INF Binaries/asteroids/QcomPkg/Drivers/PmicDxe/PmicDxeLa.inf
 
   INF MdeModulePkg/Universal/DevicePathDxe/DevicePathDxe.inf
+  # DRAM and the boot image ramdisk (payload volume) from the bootloader's device tree; see the driver's README.md.
+  INF asteroidsPkg/Drivers/ShengBootMemoryDxe/ShengBootMemoryDxe.inf
 
   INF Binaries/asteroids/MdeModulePkg/Universal/Disk/DiskIoDxe/DiskIoDxe.inf
   INF Binaries/asteroids/MdeModulePkg/Universal/Disk/PartitionDxe/PartitionDxe.inf

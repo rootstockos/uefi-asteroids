@@ -97,6 +97,11 @@
   #
   asteroidsPkg/Drivers/ShengKeyInputDxe/ShengKeyInputDxe.inf
 
+  #
+  # DRAM and the boot image ramdisk from the bootloader's device tree (x0, kept by SEC); see its README.md.
+  #
+  asteroidsPkg/Drivers/ShengBootMemoryDxe/ShengBootMemoryDxe.inf
+
 [LibraryClasses]
   UniXNULib|UniXNUPkg/Library/UniXNULib/UniXNULib.inf
   FdtLib|MdePkg/Library/BaseFdtLib/BaseFdtLib.inf
