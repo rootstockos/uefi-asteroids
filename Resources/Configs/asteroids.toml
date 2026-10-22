@@ -29,9 +29,11 @@ kernel_compression = "gzip"
 append_dtb         = true
 
 #
-# Android Boot Image Configs (header and version fields of the phone's own boot_a/boot_b)
+# Android Boot Image Configs. Header v1, not the phone's own v4: with v3/v4 the bootloader prepends the vendor_boot
+# ramdisk (6948396 bytes, not sector-aligned) and appends bootconfig, so the payload FAT volume would not start the
+# initrd. With v0-v2 the initrd is the boot image's ramdisk only. Version fields match the phone's own boot image.
 #
 [boot_image]
-header_version = 4
+header_version = 1
 os_version     = "17.0.0"
 os_patch_level = "2026-08"
