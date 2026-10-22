@@ -22,6 +22,7 @@
   FdtLib
   HobLib
   MemoryAllocationLib
+  MemoryMapHelperLib
   PrintLib
   UefiBootServicesTableLib
   UefiLib

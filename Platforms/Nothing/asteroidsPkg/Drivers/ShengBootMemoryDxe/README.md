@@ -27,3 +27,15 @@ payload volume report` block:
 The ReadyToBoot report holds for 15 seconds so it can be photographed. The connect also makes the volume usable
 when nothing else connects it, for example when UniXNU is started as a plain application, which skips its own
 connect-all.
+
+## Payload in the kernel image
+
+The report showed that the 3a's ABL ignores the boot image ramdisk. It loads the ramdisk from `init_boot`, so the
+initrd was vendor ramdisk + `init_boot` ramdisk + bootconfig (6948396 + 6281595 + 2689 bytes), with no payload.
+UniXNU's `bootimg` therefore puts the payload into the kernel image (`[bootimg] payload_in_kernel = true` in
+board.toml): a 4 KiB header (`UNIXNU PAYLOAD`, version 1, header size, volume size, CRC32) at a 4 KiB boundary
+after the firmware, then the FAT volume. The ARM64 header's image size covers it.
+
+When the initrd holds no FAT volume, the driver searches the memory map region named `Kernel` (where ABL loads the
+kernel) at 4 KiB steps for that header. It checks the CRC and publishes the volume. The device tree is not needed for
+this path.

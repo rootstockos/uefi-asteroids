@@ -30,6 +30,7 @@
 #include <Library/FdtLib.h>
 #include <Library/HobLib.h>
 #include <Library/MemoryAllocationLib.h>
+#include <Library/MemoryMapHelperLib.h>
 #include <Library/PrintLib.h>
 #include <Library/UefiBootServicesTableLib.h>
 #include <Library/UefiLib.h>
@@ -43,6 +44,23 @@
 #define ADD_LIMIT         SIZE_1GB
 #define ADD_BELOW         SIZE_4GB     // stay inside what the MMU setup maps
 #define REPORT_SECONDS    15
+
+//
+// A payload carried in the kernel image instead of the ramdisk (unixnu bootimg, board.toml
+// [bootimg] payload_in_kernel): a page-aligned header, then the FAT volume. The bootloader loads the
+// whole kernel into this memory map region.
+//
+#define KERNEL_REGION      "Kernel"
+#define PAYLOAD_MAGIC      "UNIXNU PAYLOAD\0\0"
+#define PAYLOAD_ALIGNMENT  SIZE_4KB
+
+typedef struct {
+  CHAR8     Magic[16];
+  UINT32    Version;       // 1
+  UINT32    HeaderSize;    // bytes from the header to the volume
+  UINT64    VolumeSize;
+  UINT32    VolumeCrc32;
+} KERNEL_PAYLOAD_HEADER;
 #define REPORT_FILE       L"\\EFI\\UniXNU\\unixnu.toml"
 
 typedef struct {
@@ -467,11 +485,17 @@ FindFatVolume (
 
 STATIC
 VOID
+PublishVolume (
+  IN UINT64  Start,
+  IN UINT64  End
+  );
+
+STATIC
+VOID
 PublishInitrd (
   IN CONST VOID  *Fdt
   )
 {
-  EFI_STATUS  Status;
   INT32       Chosen;
   CONST VOID  *StartProp;
   CONST VOID  *EndProp;
@@ -479,7 +503,6 @@ PublishInitrd (
   INT32       EndLength;
   UINT64      Start;
   UINT64      End;
-  EFI_HANDLE  Handle;
 
   Chosen = FdtPathOffset (Fdt, "/chosen");
   if (Chosen < 0) {
@@ -521,6 +544,19 @@ PublishInitrd (
     return;
   }
 
+  PublishVolume (Start, End);
+}
+
+STATIC
+VOID
+PublishVolume (
+  IN UINT64  Start,
+  IN UINT64  End
+  )
+{
+  EFI_STATUS  Status;
+  EFI_HANDLE  Handle;
+
   mRamBase                = (UINT8 *)(UINTN)Start;
   mMedia.MediaId          = 1;
   mMedia.RemovableMedia   = FALSE;
@@ -541,7 +577,7 @@ PublishInitrd (
                   &mBlockIo,
                   NULL
                   );
-  DEBUG ((DEBUG_ERROR, "SHENGMEM: initrd block device 0x%lx size 0x%lx %r\n", Start, End - Start, Status));
+  DEBUG ((DEBUG_ERROR, "SHENGMEM: block device 0x%lx size 0x%lx %r\n", Start, End - Start, Status));
   if (EFI_ERROR (Status)) {
     AsciiSPrint (mResult, sizeof (mResult), "%a; block device install %r", mResult, Status);
     return;
@@ -549,6 +585,60 @@ PublishInitrd (
 
   mHandle = Handle;
   gBS->CalculateCrc32 (mRamBase, (UINTN)(End - Start), &mCrc);
+}
+
+STATIC
+VOID
+PublishKernelPayload (
+  VOID
+  )
+{
+  EFI_STATUS                    Status;
+  EFI_MEMORY_REGION_DESCRIPTOR  Region;
+  UINT64                        Address;
+  UINT64                        End;
+  UINT64                        Volume;
+  KERNEL_PAYLOAD_HEADER         *Header;
+  UINT32                        Crc;
+
+  Status = LocateMemoryRegionByName (KERNEL_REGION, &Region);
+  if (EFI_ERROR (Status)) {
+    DEBUG ((DEBUG_ERROR, "SHENGMEM: no \"%a\" memory region %r\n", KERNEL_REGION, Status));
+    AsciiSPrint (mResult, sizeof (mResult), "%a; no %a region to search", mResult, KERNEL_REGION);
+    return;
+  }
+
+  End = Region.Address + Region.Length;
+  for (Address = Region.Address; Address + sizeof (KERNEL_PAYLOAD_HEADER) <= End; Address += PAYLOAD_ALIGNMENT) {
+    Header = (KERNEL_PAYLOAD_HEADER *)(UINTN)Address;
+    if (CompareMem (Header->Magic, PAYLOAD_MAGIC, sizeof (Header->Magic)) != 0) {
+      continue;
+    }
+
+    Volume = Address + Header->HeaderSize;
+    if ((Header->Version != 1) || (Header->HeaderSize < sizeof (KERNEL_PAYLOAD_HEADER)) || (Header->VolumeSize == 0) ||
+        ((Header->VolumeSize % RAM_BLOCK_SIZE) != 0) || (Volume + Header->VolumeSize > End))
+    {
+      DEBUG ((DEBUG_ERROR, "SHENGMEM: kernel payload header at 0x%lx is not usable\n", Address));
+      continue;
+    }
+
+    Crc = 0;
+    gBS->CalculateCrc32 ((VOID *)(UINTN)Volume, (UINTN)Header->VolumeSize, &Crc);
+    if (Crc != Header->VolumeCrc32) {
+      DEBUG ((DEBUG_ERROR, "SHENGMEM: kernel payload at 0x%lx, CRC 0x%x, expected 0x%x\n", Volume, Crc, Header->VolumeCrc32));
+      AsciiSPrint (mResult, sizeof (mResult), "kernel payload at 0x%lx has a bad CRC", Volume);
+      return;
+    }
+
+    DEBUG ((DEBUG_ERROR, "SHENGMEM: kernel payload at 0x%lx, 0x%lx bytes\n", Volume, Header->VolumeSize));
+    AsciiSPrint (mResult, sizeof (mResult), "kernel payload at 0x%lx, 0x%lx bytes", Volume, Header->VolumeSize);
+    PublishVolume (Volume, Volume + Header->VolumeSize);
+    return;
+  }
+
+  DEBUG ((DEBUG_ERROR, "SHENGMEM: no kernel payload in 0x%lx-0x%lx\n", Region.Address, End));
+  AsciiSPrint (mResult, sizeof (mResult), "%a; no kernel payload in 0x%lx-0x%lx", mResult, Region.Address, End);
 }
 
 //
@@ -676,25 +766,28 @@ ShengBootMemoryDxeEntry (
   EfiCreateEventReadyToBootEx (TPL_CALLBACK, ReportAtReadyToBoot, NULL, &Event);
 
   Hob = GetFirstGuidHob (&gSiliciumEntryArgHobGuid);
+  Dtb = (Hob != NULL) ? *(UINT64 *)GET_GUID_HOB_DATA (Hob) : 0;
+  mDtb = Dtb;
   if (Hob == NULL) {
     DEBUG ((DEBUG_ERROR, "SHENGMEM: no entry argument HOB\n"));
     AsciiSPrint (mResult, sizeof (mResult), "no entry argument HOB from SEC");
-    return EFI_SUCCESS;
-  }
-
-  Dtb  = *(UINT64 *)GET_GUID_HOB_DATA (Hob);
-  mDtb = Dtb;
-  if ((Dtb == 0) || ((Dtb & 3) != 0) || (FdtCheckHeader ((VOID *)(UINTN)Dtb) != 0)) {
+  } else if ((Dtb == 0) || ((Dtb & 3) != 0) || (FdtCheckHeader ((VOID *)(UINTN)Dtb) != 0)) {
     DEBUG ((DEBUG_ERROR, "SHENGMEM: x0 0x%lx is not a device tree\n", Dtb));
     AsciiSPrint (mResult, sizeof (mResult), "x0 0x%lx is not a device tree", Dtb);
-    return EFI_SUCCESS;
+  } else {
+    DEBUG ((DEBUG_ERROR, "SHENGMEM: device tree at 0x%lx, %u bytes\n", Dtb, (UINT32)FdtTotalSize ((VOID *)(UINTN)Dtb)));
+    AsciiSPrint (mResult, sizeof (mResult), "device tree read, initrd not looked at");
+    AddMemory ((VOID *)(UINTN)Dtb);
+    PublishInitrd ((VOID *)(UINTN)Dtb);
   }
 
-  AsciiSPrint (mResult, sizeof (mResult), "device tree read, initrd not looked at");
+  //
+  // Bootloaders that load the ramdisk from init_boot (Android 13 and later) drop a boot image
+  // ramdisk; the payload then rides in the kernel image.
+  //
+  if (mHandle == NULL) {
+    PublishKernelPayload ();
+  }
 
-  DEBUG ((DEBUG_ERROR, "SHENGMEM: device tree at 0x%lx, %u bytes\n", Dtb, (UINT32)FdtTotalSize ((VOID *)(UINTN)Dtb)));
-
-  AddMemory ((VOID *)(UINTN)Dtb);
-  PublishInitrd ((VOID *)(UINTN)Dtb);
   return EFI_SUCCESS;
 }
