@@ -14,9 +14,15 @@
     image's ramdisk shows up as a normal volume.
 
   Nothing here depends on a hardware address; every range comes from the DT.
+
+  Bring-up report: at the end of DXE and again just before the first boot
+  option, a summary of each step (device tree, initrd, FAT volume, whether a
+  file system bound to it and can read the UniXNU config) is printed, and the
+  second time it stays on screen for REPORT_SECONDS.
 **/
 
 #include <Uefi.h>
+#include <Guid/EventGroup.h>
 #include <Library/BaseLib.h>
 #include <Library/BaseMemoryLib.h>
 #include <Library/DebugLib.h>
@@ -24,14 +30,20 @@
 #include <Library/FdtLib.h>
 #include <Library/HobLib.h>
 #include <Library/MemoryAllocationLib.h>
+#include <Library/PrintLib.h>
 #include <Library/UefiBootServicesTableLib.h>
+#include <Library/UefiLib.h>
 #include <Protocol/BlockIo.h>
 #include <Protocol/DevicePath.h>
+#include <Protocol/DiskIo.h>
+#include <Protocol/SimpleFileSystem.h>
 
 #define MAX_RANGES        64
 #define MIN_PIECE_SIZE    SIZE_16MB
 #define ADD_LIMIT         SIZE_1GB
 #define ADD_BELOW         SIZE_4GB     // stay inside what the MMU setup maps
+#define REPORT_SECONDS    15
+#define REPORT_FILE       L"\\EFI\\UniXNU\\unixnu.toml"
 
 typedef struct {
   UINT64  Base;
@@ -301,6 +313,17 @@ STATIC RAM_BLOCK_DEVICE_PATH  mDevicePath = {
 STATIC UINT8                    *mRamBase;
 STATIC EFI_BLOCK_IO_MEDIA       mMedia;
 
+//
+// For the bring-up report.
+//
+STATIC CHAR8       mResult[96] = "driver entry not reached";
+STATIC UINT64      mDtb;
+STATIC UINT64      mInitrdStart;
+STATIC UINT64      mInitrdEnd;
+STATIC EFI_HANDLE  mHandle;
+STATIC UINT32      mCrc;
+STATIC UINTN       mReads;
+
 STATIC
 EFI_STATUS
 EFIAPI
@@ -339,6 +362,7 @@ RamBlockRead (
     return EFI_INVALID_PARAMETER;
   }
 
+  mReads++;
   CopyMem (Buffer, mRamBase + Lba * RAM_BLOCK_SIZE, BufferSize);
   return EFI_SUCCESS;
 }
@@ -460,6 +484,7 @@ PublishInitrd (
   Chosen = FdtPathOffset (Fdt, "/chosen");
   if (Chosen < 0) {
     DEBUG ((DEBUG_ERROR, "SHENGMEM: no /chosen\n"));
+    AsciiSPrint (mResult, sizeof (mResult), "no /chosen in the device tree");
     return;
   }
 
@@ -469,17 +494,22 @@ PublishInitrd (
       ((StartLength != 4) && (StartLength != 8)) || ((EndLength != 4) && (EndLength != 8)))
   {
     DEBUG ((DEBUG_ERROR, "SHENGMEM: no initrd in /chosen\n"));
+    AsciiSPrint (mResult, sizeof (mResult), "no linux,initrd-start/-end in /chosen");
     return;
   }
 
   Start = ReadCells (StartProp, StartLength / 4);
   End   = ReadCells (EndProp, EndLength / 4);
+  mInitrdStart = Start;
+  mInitrdEnd   = End;
+  AsciiSPrint (mResult, sizeof (mResult), "no FAT boot sector in the initrd");
   if (End > Start) {
     UINT64  VolumeStart;
     UINT64  VolumeBytes;
 
     if (FindFatVolume (Start, End, &VolumeStart, &VolumeBytes)) {
       DEBUG ((DEBUG_ERROR, "SHENGMEM: initrd 0x%lx-0x%lx, FAT volume at +0x%lx\n", Start, End, VolumeStart - Start));
+      AsciiSPrint (mResult, sizeof (mResult), "FAT volume at +0x%lx, 0x%lx bytes", VolumeStart - Start, VolumeBytes);
       Start = VolumeStart;
       End   = VolumeStart + VolumeBytes;
     }
@@ -487,6 +517,7 @@ PublishInitrd (
 
   if ((End <= Start) || (((End - Start) % RAM_BLOCK_SIZE) != 0)) {
     DEBUG ((DEBUG_ERROR, "SHENGMEM: initrd 0x%lx-0x%lx is not a whole number of sectors\n", Start, End));
+    AsciiSPrint (mResult, sizeof (mResult), "%a; initrd is not a whole number of sectors", mResult);
     return;
   }
 
@@ -511,6 +542,120 @@ PublishInitrd (
                   NULL
                   );
   DEBUG ((DEBUG_ERROR, "SHENGMEM: initrd block device 0x%lx size 0x%lx %r\n", Start, End - Start, Status));
+  if (EFI_ERROR (Status)) {
+    AsciiSPrint (mResult, sizeof (mResult), "%a; block device install %r", mResult, Status);
+    return;
+  }
+
+  mHandle = Handle;
+  gBS->CalculateCrc32 (mRamBase, (UINTN)(End - Start), &mCrc);
+}
+
+//
+// The bring-up report. It also connects the volume, so a file system binds
+// even if nothing else connects it. Only the ReadyToBoot call waits.
+//
+STATIC
+VOID
+Report (
+  IN CONST CHAR8  *Stage,
+  IN BOOLEAN      Wait
+  )
+{
+  EFI_STATUS                       Status;
+  VOID                             *DiskIo;
+  EFI_SIMPLE_FILE_SYSTEM_PROTOCOL  *Fs;
+  EFI_FILE_PROTOCOL                *Root;
+  EFI_FILE_PROTOCOL                *File;
+  EFI_STATUS                       Connect;
+  EFI_STATUS                       Open;
+  UINT32                           Crc;
+  UINTN                            Count;
+  EFI_HANDLE                       *Handles;
+
+  DEBUG ((DEBUG_ERROR, "SHENGMEM: ===== payload volume report (%a) =====\n", Stage));
+  DEBUG ((DEBUG_ERROR, "SHENGMEM: dt 0x%lx, initrd 0x%lx-0x%lx\n", mDtb, mInitrdStart, mInitrdEnd));
+  DEBUG ((DEBUG_ERROR, "SHENGMEM: %a\n", mResult));
+
+  if (mHandle != NULL) {
+    Crc = 0;
+    gBS->CalculateCrc32 (mRamBase, (UINTN)((mMedia.LastBlock + 1) * RAM_BLOCK_SIZE), &Crc);
+    Status = gBS->HandleProtocol (mHandle, &gEfiDiskIoProtocolGuid, &DiskIo);
+    DEBUG ((
+      DEBUG_ERROR,
+      "SHENGMEM: volume bytes %a, %u reads so far, disk io %a\n",
+      (Crc == mCrc) ? "unchanged" : "CHANGED since publish",
+      (UINT32)mReads,
+      EFI_ERROR (Status) ? "missing" : "bound"
+      ));
+
+    Fs     = NULL;
+    Status = gBS->HandleProtocol (mHandle, &gEfiSimpleFileSystemProtocolGuid, (VOID **)&Fs);
+    DEBUG ((DEBUG_ERROR, "SHENGMEM: file system before connect: %a\n", EFI_ERROR (Status) ? "missing" : "bound"));
+
+    Connect = gBS->ConnectController (mHandle, NULL, NULL, TRUE);
+    Fs      = NULL;
+    Status  = gBS->HandleProtocol (mHandle, &gEfiSimpleFileSystemProtocolGuid, (VOID **)&Fs);
+    Open    = EFI_NOT_STARTED;
+    if (!EFI_ERROR (Status)) {
+      Open = Fs->OpenVolume (Fs, &Root);
+      if (!EFI_ERROR (Open)) {
+        Open = Root->Open (Root, &File, REPORT_FILE, EFI_FILE_MODE_READ, 0);
+        if (!EFI_ERROR (Open)) {
+          File->Close (File);
+        }
+
+        Root->Close (Root);
+      }
+    }
+
+    DEBUG ((
+      DEBUG_ERROR,
+      "SHENGMEM: connect %r, file system after: %a, %s: %r, %u reads\n",
+      Connect,
+      EFI_ERROR (Status) ? "missing" : "bound",
+      REPORT_FILE,
+      Open,
+      (UINT32)mReads
+      ));
+  }
+
+  Count   = 0;
+  Handles = NULL;
+  if (!EFI_ERROR (gBS->LocateHandleBuffer (ByProtocol, &gEfiSimpleFileSystemProtocolGuid, NULL, &Count, &Handles))) {
+    FreePool (Handles);
+  }
+
+  DEBUG ((DEBUG_ERROR, "SHENGMEM: %u file systems in total\n", (UINT32)Count));
+
+  if (Wait) {
+    DEBUG ((DEBUG_ERROR, "SHENGMEM: ===== holding %u seconds =====\n", (UINT32)REPORT_SECONDS));
+    gBS->Stall (REPORT_SECONDS * 1000 * 1000);
+  }
+}
+
+STATIC
+VOID
+EFIAPI
+ReportAtEndOfDxe (
+  IN EFI_EVENT  Event,
+  IN VOID       *Context
+  )
+{
+  gBS->CloseEvent (Event);
+  Report ("end of DXE", FALSE);
+}
+
+STATIC
+VOID
+EFIAPI
+ReportAtReadyToBoot (
+  IN EFI_EVENT  Event,
+  IN VOID       *Context
+  )
+{
+  gBS->CloseEvent (Event);
+  Report ("ready to boot", TRUE);
 }
 
 EFI_STATUS
@@ -522,18 +667,30 @@ ShengBootMemoryDxeEntry (
 {
   EFI_HOB_GUID_TYPE  *Hob;
   UINT64             Dtb;
+  EFI_EVENT          Event;
+
+  //
+  // First, so even an early exit below shows up in the report.
+  //
+  gBS->CreateEventEx (EVT_NOTIFY_SIGNAL, TPL_CALLBACK, ReportAtEndOfDxe, NULL, &gEfiEndOfDxeEventGroupGuid, &Event);
+  EfiCreateEventReadyToBootEx (TPL_CALLBACK, ReportAtReadyToBoot, NULL, &Event);
 
   Hob = GetFirstGuidHob (&gSiliciumEntryArgHobGuid);
   if (Hob == NULL) {
     DEBUG ((DEBUG_ERROR, "SHENGMEM: no entry argument HOB\n"));
+    AsciiSPrint (mResult, sizeof (mResult), "no entry argument HOB from SEC");
     return EFI_SUCCESS;
   }
 
-  Dtb = *(UINT64 *)GET_GUID_HOB_DATA (Hob);
+  Dtb  = *(UINT64 *)GET_GUID_HOB_DATA (Hob);
+  mDtb = Dtb;
   if ((Dtb == 0) || ((Dtb & 3) != 0) || (FdtCheckHeader ((VOID *)(UINTN)Dtb) != 0)) {
     DEBUG ((DEBUG_ERROR, "SHENGMEM: x0 0x%lx is not a device tree\n", Dtb));
+    AsciiSPrint (mResult, sizeof (mResult), "x0 0x%lx is not a device tree", Dtb);
     return EFI_SUCCESS;
   }
+
+  AsciiSPrint (mResult, sizeof (mResult), "device tree read, initrd not looked at");
 
   DEBUG ((DEBUG_ERROR, "SHENGMEM: device tree at 0x%lx, %u bytes\n", Dtb, (UINT32)FdtTotalSize ((VOID *)(UINTN)Dtb)));
 

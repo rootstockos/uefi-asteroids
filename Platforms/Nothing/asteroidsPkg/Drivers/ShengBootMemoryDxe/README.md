@@ -13,3 +13,17 @@ is the vendor_boot ramdisk (6948396 bytes on the 3a, not sector-aligned), then t
 FAT volume), then bootconfig. `FindFatVolume` finds the first valid FAT boot sector inside the initrd, and the
 driver publishes only that volume, sized from its own header. When the initrd is the volume alone (header v0-v2,
 as on sheng), the volume is found at offset 0, as before.
+
+## Bring-up report
+
+At the end of DXE and again at ReadyToBoot (just before UniXNU starts), the driver prints a `SHENGMEM: =====
+payload volume report` block:
+
+- the device tree address from x0, the `/chosen` initrd range, and how far the driver got (or why it stopped);
+- whether the volume's bytes are unchanged since they were published (CRC32), and how many block reads it has had;
+- whether DiskIo and a file system are bound to it, before and after a `ConnectController` on its handle;
+- whether `\EFI\UniXNU\unixnu.toml` opens, and how many file systems exist in total.
+
+The ReadyToBoot report holds for 15 seconds so it can be photographed. The connect also makes the volume usable
+when nothing else connects it, for example when UniXNU is started as a plain application, which skips its own
+connect-all.
