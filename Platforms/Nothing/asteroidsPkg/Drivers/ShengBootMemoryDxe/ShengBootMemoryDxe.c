@@ -18,7 +18,7 @@
   Bring-up report: at the end of DXE and again just before the first boot
   option, a summary of each step (device tree, initrd, FAT volume, whether a
   file system bound to it and can read the UniXNU config) is printed, and the
-  second time it stays on screen for REPORT_SECONDS.
+  second time it stays on screen for REPORT_SECONDS (0: no hold).
 **/
 
 #include <Uefi.h>
@@ -43,7 +43,7 @@
 #define MIN_PIECE_SIZE    SIZE_16MB
 #define ADD_LIMIT         SIZE_1GB
 #define ADD_BELOW         SIZE_4GB     // stay inside what the MMU setup maps
-#define REPORT_SECONDS    15
+#define REPORT_SECONDS    0          // was 15 while the payload volume was being found; set again to read the report
 
 //
 // A payload carried in the kernel image instead of the ramdisk (unixnu bootimg, board.toml
@@ -718,7 +718,7 @@ Report (
 
   DEBUG ((DEBUG_ERROR, "SHENGMEM: %u file systems in total\n", (UINT32)Count));
 
-  if (Wait) {
+  if (Wait && (REPORT_SECONDS > 0)) {
     DEBUG ((DEBUG_ERROR, "SHENGMEM: ===== holding %u seconds =====\n", (UINT32)REPORT_SECONDS));
     gBS->Stall (REPORT_SECONDS * 1000 * 1000);
   }

@@ -24,7 +24,8 @@ payload volume report` block:
 - whether DiskIo and a file system are bound to it, before and after a `ConnectController` on its handle;
 - whether `\EFI\UniXNU\unixnu.toml` opens, and how many file systems exist in total.
 
-The ReadyToBoot report holds for 15 seconds so it can be photographed. The connect also makes the volume usable
+The ReadyToBoot report can hold for `REPORT_SECONDS` so it can be photographed; it is 0 (no hold) now that the payload
+volume is found, and was 15 during that bring-up. The connect also makes the volume usable
 when nothing else connects it, for example when UniXNU is started as a plain application, which skips its own
 connect-all.
 
