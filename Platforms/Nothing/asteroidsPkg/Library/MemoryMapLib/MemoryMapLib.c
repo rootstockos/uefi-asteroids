@@ -40,7 +40,11 @@ gMemoryDescriptor[] = {
   {"Kernel",             0xA8000000, 0x10000000, AddMem, SYS_MEM, SYS_MEM_CAP, Reserv, WRITE_BACK_XN},
   {"DXE_Heap",           0xB8000000, 0x1BA00000, AddMem, SYS_MEM, SYS_MEM_CAP, Conv, WRITE_BACK_XN},
   {"Display_Reserved",   0xE3940000, 0x02B00000, AddMem, MEM_RES, SYS_MEM_CAP, Reserv, WRITE_THROUGH_XN},
-  {"DXE_Heap1",          0xE6440000, 0x024C0000, AddMem, SYS_MEM, SYS_MEM_CAP, Conv, WRITE_BACK_XN},
+  // GMU_Pool: 32 MiB of what the stock map gives as DXE_Heap1, reserved for the Adreno GMU payloads (icache, debug, log, HFI)
+  // and their SMMU tables, which NativeAdreno adopts over IODeviceMemory::withRange instead of asking the XNU VM for 16 MiB
+  // contiguous (uke's "GMU Pool"). Taken from DXE_Heap1, not DXE_Heap, so DarwinBoot's XNU window keeps its run.
+  {"GMU_Pool",           0xE6440000, 0x02000000, AddMem, SYS_MEM, SYS_MEM_CAP, Reserv, WRITE_BACK_XN},
+  {"DXE_Heap1",          0xE8440000, 0x004C0000, AddMem, SYS_MEM, SYS_MEM_CAP, Conv, WRITE_BACK_XN},
   {"TZApps_Reserved",    0xE9500000, 0x05500000, AddMem, MEM_RES, UNCACHEABLE, Reserv, UNCACHED_UNBUFFERED_XN},
 
   // Register Regions
