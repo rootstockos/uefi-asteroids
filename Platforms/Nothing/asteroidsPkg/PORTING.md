@@ -19,8 +19,10 @@ Not a ready-to-flash image. Everything here has been booted only from RAM with `
   the caches are cleaned before the jump. UniXNU's `bootimg` requires it.
 - **Boot image.** Header v4, os_version 17.0.0 and patch 2026-08, matching the phone's own `boot.img`.
 
-Vendor binaries are not in this repository. They come from the phone's own `uefi` partition (UEFIReader) and go
-into `Binaries/asteroids`, kept locally.
+Vendor binaries are in `Binaries/asteroids` of the `Binaries` submodule, rootstockos/Device-Binaries (branch
+`asteroids`), as other Mu-Silicium devices keep theirs in Project-Silicium/Device-Binaries: UEFIReader's output of the
+phone's `uefi.img` (01955, from NullDebris's vendor repository) with giulia's ClockDxe and SPMIDxe patches. Its README.md
+lists the source and the patches.
 
 ## State (2026-10-22)
 
