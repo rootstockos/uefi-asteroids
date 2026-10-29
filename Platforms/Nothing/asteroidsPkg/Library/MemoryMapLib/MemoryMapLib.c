@@ -49,12 +49,12 @@ gMemoryDescriptor[] = {
 
   // High DRAM: the 3a's live device tree lists 0x8BF800000 + 0xC0800000 and 0x980000000 + 0x180000000 as memory (Android's
   // /proc/iomem: System RAM 0x8BF800000-0xAFFFFEFFF), with no static reservation above 4 GiB. Declared like uke's MemoryMapLib
-  // (uefi-uke 1e2d12d) so DarwinBoot can place XNU's 4.75 GiB window here (board.toml owned_memory_size); the two adjacent
-  // entries make one run. GPU_Pool, the Adreno BO pool the kernel adopts (GpuPowerBoard.h GPB_GPU_POOL_*), is reserved at
-  // the top so the window never covers it; the last 2 MiB below 0xB00000000 are left out (iomem ends one page short).
+  // (uefi-uke 1e2d12d) so DarwinBoot can place XNU's window here (board.toml owned_memory_size); the two adjacent entries make
+  // one run of 9 GiB less 2 MiB (the last 2 MiB below 0xB00000000 are left out: iomem ends one page short). asteroids T64: no
+  // GPU_Pool at the top any more; the Adreno BOs come from XNU's own memory (sheng's Adreno740 882f4bf), so the whole bank is
+  // conventional and the window can grow over what the pool held.
   {"RAM_Partition_Hi0",  0x8C0000000, 0x0C0000000, AddMem, SYS_MEM, SYS_MEM_CAP, Conv, WRITE_BACK_XN},
-  {"RAM_Partition_Hi1",  0x980000000, 0x13FE00000, AddMem, SYS_MEM, SYS_MEM_CAP, Conv, WRITE_BACK_XN},
-  {"GPU_Pool",           0xABFE00000, 0x040000000, AddMem, SYS_MEM, SYS_MEM_CAP, Reserv, WRITE_BACK_XN},
+  {"RAM_Partition_Hi1",  0x980000000, 0x17FE00000, AddMem, SYS_MEM, SYS_MEM_CAP, Conv, WRITE_BACK_XN},
 
   // Register Regions
   {"IPC_ROUTER_TOP",     0x00400000, 0x00100000, AddDev, MMAP_IO, UNCACHEABLE, MmIO, NS_DEVICE},
